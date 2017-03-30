@@ -94,24 +94,23 @@ private[kafka] class ConsumerControlImpl[F[_], K, V](consumer: Consumer[K, V], s
     consumer.poll(settings.pollInterval.toMillis).iterator.asScala.toSeq
   }
 
-
   override def commiter = new Commiter[F] {
     override def commit(partitionsAndOffsets: Map[TopicPartition, Long]) = F.delay {
       consumer.commitSync(partitionsAndOffsets.mapValues(offset => new OffsetAndMetadata(offset)).asJava)
-()
+      ()
     }
-  //   override def commit(partitionsAndoffsets: Map[TopicPartition, Long]) = F.async { register =>
-  //     F.delay {
-  //       consumer.commitAsync(partitionsAndoffsets.mapValues(offset => new OffsetAndMetadata(offset)).asJava, new OffsetCommitCallback {
-  //         override def onComplete(offsets: java.util.Map[TopicPartition, OffsetAndMetadata], exception: Exception) = {
-  //           if (offsets != null) register(Right(()))
-  //           else register(Left(exception))
-  //         }
-  //       })
-  //       ()
-  //     }
-  //   }
-   }
+    //   override def commit(partitionsAndoffsets: Map[TopicPartition, Long]) = F.async { register =>
+    //     F.delay {
+    //       consumer.commitAsync(partitionsAndoffsets.mapValues(offset => new OffsetAndMetadata(offset)).asJava, new OffsetCommitCallback {
+    //         override def onComplete(offsets: java.util.Map[TopicPartition, OffsetAndMetadata], exception: Exception) = {
+    //           if (offsets != null) register(Right(()))
+    //           else register(Left(exception))
+    //         }
+    //       })
+    //       ()
+    //     }
+    //   }
+  }
 }
 
 private[kafka] class CommitableMessageBuilder[F[_], K, V](consumer: ConsumerControl[F, K, V], settings: ConsumerSettings[K, V])(implicit F: Async[F]) {

@@ -7,7 +7,7 @@ lazy val root = (project in file(".")).
     inThisBuild(List(
       organization := "co.enear.fs2",
       scalaVersion := "2.11.8",
-      version      := "0.1.0-SNAPSHOT"
+      licenses += ("Apache-2.0", url("http://www.apache.org/licenses/LICENSE-2.0"))
     )),
     name := "fs2-kafka",
     libraryDependencies ++= Seq(
