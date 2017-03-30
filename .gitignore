@@ -1,2 +1,5 @@
 /.DS_Store
 /.ensime
+target/
+.ensime_cache(
+.ensime_cache/
