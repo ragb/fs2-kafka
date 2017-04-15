@@ -38,4 +38,5 @@ lazy val root = (project in file(".")).
   "-Ywarn-unused-import"     // 2.11 only
       )
   )
-.settings(Defaults.itSettings:_*)
+  .settings(Defaults.itSettings:_*)
+

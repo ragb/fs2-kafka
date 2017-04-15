@@ -13,9 +13,9 @@ object Consumer {
 
   private[kafka] def createKafkaConsumer[F[_], K, V](
     settings: ConsumerSettings[K, V]
-  )(implicit F: Async[F]): F[ConsumerControl[F, K, V]] = F.delay {
+  )(implicit F: Async[F]): F[ConsumerControl[F, K, V]] = async.mutable.Queue.unbounded[F, F[Unit]].map { tasksQueue =>
     new ConsumerControlImpl[F, K, V](
-      new KafkaConsumer(Properties.fromMap(settings.properties), settings.keyDeserializer, settings.valueDeserializer), settings
+      new KafkaConsumer(Properties.fromMap(settings.properties), settings.keyDeserializer, settings.valueDeserializer), settings, tasksQueue
     )
   }
 
@@ -24,23 +24,8 @@ object Consumer {
   }, _.close)
 
   private[kafka] def messageStream[F[_]: Async, K, V, S <: Subscription](settings: ConsumerSettings[K, V], subscription: S, subscriber: Subscriber[F, K, V, S], builder: MessageBuilder[F, K, V]): Stream[F, builder.Message] = makeConsumerRecordStream(settings, subscription, subscriber) { (consumer: ConsumerControl[F, K, V]) =>
-    for {
-      queue <- Stream.eval(async.mutable.Queue.synchronousNoneTerminated[F, Chunk[ConsumerRecord[K, V]]])
-      done <- Stream.eval(async.mutable.Signal[F, Boolean](false))
-      pollStream = Stream.eval(consumer.poll)
-        .filter(_.nonEmpty)
-        .map(Option.apply _)
-        .to(queue.enqueue)
-        .repeat
-        .interruptWhen(done)
-        .onFinalize(queue.enqueue1(None))
-      recordsStream = queue.dequeue
-        .through(pipe.unNoneTerminate)
-        .flatMap(Stream.chunk _)
-        .through(builder.build(consumer)(_))
-      message <- (recordsStream mergeHaltBoth pollStream.drain)
-        .onFinalize(consumer.wakeup >> done.set(true))
-    } yield message
+    consumer.pollStream
+      .through(builder.build(consumer)(_))
   }
 
   def plainStream[F[_]: Async, K, V](settings: ConsumerSettings[K, V], Subscription: Subscription): Stream[F, ConsumerRecord[K, V]] = messageStream[F, K, V, Subscription](settings, Subscription, new SimpleSubscriber, new PlainMessageBuilder[F, K, V])
@@ -55,6 +40,7 @@ trait ConsumerControl[F[_], K, V] {
   def assign(assignment: ManualSubscription): F[Unit]
   def subscribe(subscription: AutoSubscription, listener: ConsumerRebalanceListener): F[Unit]
   def poll: F[Chunk[ConsumerRecord[K, V]]]
+  def pollStream: Stream[F, ConsumerRecord[K, V]]
   def wakeup: F[Unit]
   def commiter: Commiter[F]
 }
@@ -102,7 +88,7 @@ trait Commiter[F[_]] {
   def commit(partitions: Map[TopicPartition, Long]): F[Commited]
 }
 
-private[kafka] class ConsumerControlImpl[F[_], K, V](consumer: Consumer[K, V], settings: ConsumerSettings[K, V])(implicit F: Async[F]) extends ConsumerControl[F, K, V] {
+private[kafka] class ConsumerControlImpl[F[_], K, V](consumer: Consumer[K, V], settings: ConsumerSettings[K, V], pollThreadTasksQueue: async.mutable.Queue[F, F[Unit]])(implicit F: Async[F]) extends ConsumerControl[F, K, V] {
 
   override def close = F.delay {
     consumer.close()
@@ -132,29 +118,60 @@ private[kafka] class ConsumerControlImpl[F[_], K, V](consumer: Consumer[K, V], s
 
   override def poll = F.delay {
     try {
-      val records = consumer.poll(settings.pollInterval.toMillis).iterator.asScala.toSeq
-      Chunk.seq(records)
+      Chunk.seq(consumer.poll(settings.pollInterval.toMillis).iterator.asScala.toSeq)
     } catch {
       case e: WakeupException => Chunk.empty
     }
   }
 
+  override def pollStream = for {
+    outputQueue <- Stream.eval(async.mutable.Queue.synchronousNoneTerminated[F, Chunk[ConsumerRecord[K, V]]])
+    done <- Stream.eval(async.mutable.Signal(false))
+    pollingThread = Stream.eval(poll)
+      .flatMap { chunk =>
+        Stream.eval {
+          // If we have any tasks to evaluate in the same thread we poll do it here
+          for {
+            size <- pollThreadTasksQueue.size.get
+            tasks <- if (size > 0) pollThreadTasksQueue.dequeueBatch1(size) else F.pure(Chunk.empty)
+            _ <- Stream.chunk(tasks).evalMap(identity _).run
+          } yield chunk
+        }
+      }
+      .filter(_.nonEmpty)
+      .repeat
+      .map(Option.apply _)
+      .to(outputQueue.enqueue)
+      .interruptWhen(done)
+      .onFinalize(outputQueue.enqueue1(None))
+
+    outputThread = outputQueue.dequeue
+      .unNoneTerminate
+      .flatMap(Stream.chunk _)
+    record <- (pollingThread mergeDrainL outputThread)
+      .onFinalize(done.set(true) >> wakeup)
+  } yield record
+
   override def wakeup = F.delay {
     consumer.wakeup()
   }
 
+  // This enqueues the commit task to the polling thread tasks queue
   override def commiter = new Commiter[F] {
     override def commit(partitionsAndOffsets: Map[TopicPartition, Long]) = F.async[Commited] { register =>
-      F.delay {
-        consumer.commitAsync(partitionsAndOffsets.mapValues(offset => new OffsetAndMetadata(offset)).asJava, new OffsetCommitCallback {
-          def onComplete(partitionOffsets: java.util.Map[TopicPartition, OffsetAndMetadata], exception: Exception) = {
-            if (exception != null) register(Left(exception))
-            else register(Right(Commited(partitionOffsets.asScala.toMap.mapValues(_.offset))))
-          }
-        })
+      pollThreadTasksQueue.enqueue1 {
+        F.delay {
+          consumer.commitAsync(partitionsAndOffsets.mapValues(offset => new OffsetAndMetadata(offset)).asJava, new OffsetCommitCallback {
+            def onComplete(partitionOffsets: java.util.Map[TopicPartition, OffsetAndMetadata], exception: Exception) = {
+              if (exception != null) register(Left(exception))
+              else register(Right(Commited(partitionOffsets.asScala.toMap.mapValues(_.offset))))
+            }
+          })
+        }
       }
     }
   }
+
 }
 
 private[kafka] trait MessageBuilder[F[_], K, V] {

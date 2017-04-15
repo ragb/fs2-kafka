@@ -12,6 +12,7 @@ case class ConsumerSettings[K, V](pollInterval: FiniteDuration, properties: Map[
   def withPollInterval(interval: FiniteDuration) = copy[K, V](pollInterval = interval)
   def withMaxPollRecords(maxPollRecords: Long) = withProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, maxPollRecords.toString)
   def withAutoOffsetReset(reset: String) = withProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, reset)
+  def withClientId(clientId: String) = withProperty(ConsumerConfig.CLIENT_ID_CONFIG, clientId)
 
   def withProperty(key: String, value: String) = copy[K, V](properties = properties.updated(key, value))
 

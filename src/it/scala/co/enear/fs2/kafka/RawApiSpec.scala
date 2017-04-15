@@ -16,14 +16,14 @@ import DefaultSerialization._
 
 class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specification with DockerKitSpotify with DockerKafkaService with DockerTestKit{
   implicit val strategy = Strategy.fromFixedDaemonPool(16, "kafka integration")
-  implicit val scheduler = Scheduler.fromFixedDaemonPool(2, "scheduler")
+  implicit val scheduler = Scheduler.fromFixedDaemonPool(16, "scheduler")
 
-  sequential
+  sequential;
 
   val testTopic = "test"
   val bootstrapServers = s"localhost:${KafkaAdvertisedPort}"
   val producerSettings = ProducerSettings().withBootstrapServers(bootstrapServers)
-  val consumerSettings = ConsumerSettings[String, String](50 millis).withBootstrapServers(bootstrapServers)
+  val consumerSettings = ConsumerSettings[String, String](100 millis).withBootstrapServers(bootstrapServers)
     .withGroupId("test")
     .withAutoOffsetReset("earliest")
     .withAutoCommit(true)
@@ -44,8 +44,8 @@ class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specificat
         .take(1)
 
 
-      (producerStream mergeDrainL consumerStream)
-        .runLast.unsafeRunAsyncFuture must beEqualTo(Some("hello")).await(0, 60 seconds)
+      (producerStream.drain merge consumerStream)
+        .runLast.unsafeRunAsyncFuture must beEqualTo(Some("hello")).await(0, 10 seconds)
     }
 
     "Consume produced messages" in {
@@ -56,11 +56,9 @@ class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specificat
             .map(_.toString)
             .map(str => new ProducerRecord(testTopic, "test", str))
             .to(producerControl.sendSink)
-
-
         }
 
-      val consumerStream = Consumer.plainStream[Task, String, String](consumerSettings, subscription)
+      val consumerStream = time.sleep_[Task](2 seconds) ++  Consumer.plainStream[Task, String, String](consumerSettings, subscription)
         .map(_.value)
         .take(count.toLong)
       .map(_ => 1)
@@ -69,8 +67,9 @@ class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specificat
         _ <- producerStream.run
 sum <- consumerStream.runFold[Int](0)(_ + _)
       } yield sum
-      sum.unsafeRunAsyncFuture must beEqualTo(count).await(1, 20 seconds)
+      sum.unsafeRunAsyncFuture must beEqualTo(count).await(0, 30 seconds)
     }
+
 
     "Commit messages" in {
             val producerStream = Producer.kafkaProducer[Task, String, String, Nothing](producerSettings) { producerControl =>
@@ -80,11 +79,11 @@ sum <- consumerStream.runFold[Int](0)(_ + _)
           .drain
         }
 
-      val consumerStream = Consumer.commitableMessageStream[Task, String, String, Subscription](consumerSettings.withAutoCommit(false), subscription)
+      val consumerStream = time.sleep_[Task](2 seconds) ++ Consumer.commitableMessageStream[Task, String, String, Subscription](consumerSettings.withAutoCommit(false), subscription)
         .evalMap(_.commitableOffset.commit)
       .take(1)
     
-    (producerStream merge consumerStream)
+    (producerStream.drain ++ consumerStream)
       .run
       .unsafeRunAsyncFuture must beEqualTo(()).await(0, 10 seconds)
   }
