@@ -18,11 +18,21 @@ case class ConsumerSettings[K, V](pollInterval: FiniteDuration, properties: Map[
 }
 
 sealed trait Subscription
+sealed trait AutoSubscription extends Subscription
+sealed trait ManualSubscription extends Subscription
 
-object Subscription {
-  type ConsumerRebalanceListenerFunction = Consumer[_, _] => Iterable[TopicPartition] => Unit
+object Subscriptions {
 
-  case class AutoSubscription(topics: Set[String], onAssignedPartitions: Option[ConsumerRebalanceListenerFunction] = None, onRevokedPartitions: Option[ConsumerRebalanceListenerFunction] = None) extends Subscription
+  private[kafka] final case class TopicsSubscription(topics: Set[String]) extends AutoSubscription
+  private[kafka] final case class TopicsPatternSubscription(pattern: String) extends AutoSubscription
 
-  case class ManualAssignment(assignments: Map[String, Int]) extends Subscription
+  private[kafka] final case class ManualAssignment(assignments: Set[TopicPartition]) extends ManualSubscription
+
+  private[kafka] final case class ManualAssignmentWithOffsets(assignmentsAndOffsets: Map[TopicPartition, Long]) extends ManualSubscription
+
+  def topics(topics: Set[String]) = TopicsSubscription(topics)
+  def topics(topics: String*) = TopicsSubscription(topics.toSet)
+  def topicPattern(pattern: String) = TopicsPatternSubscription(pattern)
+  def assignment(topicPartitions: Set[TopicPartition]) = ManualAssignment(topicPartitions)
+  def assignmentWithOffsets(partitionsAndOffsets: Map[TopicPartition, Long]) = ManualAssignmentWithOffsets(partitionsAndOffsets)
 }

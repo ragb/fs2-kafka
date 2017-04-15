@@ -15,7 +15,7 @@ import scala.concurrent.duration._
 import DefaultSerialization._
 
 class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specification with DockerKitSpotify with DockerKafkaService with DockerTestKit{
-  implicit val strategy = Strategy.fromFixedDaemonPool(2, "kafka integration")
+  implicit val strategy = Strategy.fromFixedDaemonPool(16, "kafka integration")
   implicit val scheduler = Scheduler.fromFixedDaemonPool(2, "scheduler")
 
   sequential
@@ -23,11 +23,11 @@ class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specificat
   val testTopic = "test"
   val bootstrapServers = s"localhost:${KafkaAdvertisedPort}"
   val producerSettings = ProducerSettings().withBootstrapServers(bootstrapServers)
-  val consumerSettings = ConsumerSettings[String, String](100 millis).withBootstrapServers(bootstrapServers)
+  val consumerSettings = ConsumerSettings[String, String](50 millis).withBootstrapServers(bootstrapServers)
     .withGroupId("test")
     .withAutoOffsetReset("earliest")
     .withAutoCommit(true)
-  val subscription = Subscription.AutoSubscription(Set(testTopic))
+  val subscription = Subscriptions.topics(Set(testTopic))
 
 
   "Raw API" should {
@@ -44,18 +44,19 @@ class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specificat
         .take(1)
 
 
-      (producerStream ++ consumerStream)
+      (producerStream mergeDrainL consumerStream)
         .runLast.unsafeRunAsyncFuture must beEqualTo(Some("hello")).await(0, 60 seconds)
     }
 
     "Consume produced messages" in {
-      val count = 200000
+      val count = 10000
       val producerStream = Producer.kafkaProducer[Task, String, String, Unit](producerSettings) { producerControl =>
           Stream.range(0, count)
             .covary[Task]
             .map(_.toString)
             .map(str => new ProducerRecord(testTopic, "test", str))
-            .to(producerControl.sendSink())
+            .to(producerControl.sendSink)
+
 
         }
 
@@ -68,7 +69,7 @@ class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specificat
         _ <- producerStream.run
 sum <- consumerStream.runFold[Int](0)(_ + _)
       } yield sum
-      sum.unsafeRunAsyncFuture must beEqualTo(count).await(0, 60 seconds)
+      sum.unsafeRunAsyncFuture must beEqualTo(count).await(1, 20 seconds)
     }
 
     "Commit messages" in {
@@ -79,11 +80,11 @@ sum <- consumerStream.runFold[Int](0)(_ + _)
           .drain
         }
 
-      val consumerStream = Consumer.commitableMessageStream[Task, String, String](consumerSettings.withAutoCommit(false), subscription)
-      .take(1)
+      val consumerStream = Consumer.commitableMessageStream[Task, String, String, Subscription](consumerSettings.withAutoCommit(false), subscription)
         .evalMap(_.commitableOffset.commit)
+      .take(1)
     
-    (producerStream ++ consumerStream)
+    (producerStream merge consumerStream)
       .run
       .unsafeRunAsyncFuture must beEqualTo(()).await(0, 10 seconds)
   }
