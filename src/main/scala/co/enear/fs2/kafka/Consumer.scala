@@ -1,13 +1,12 @@
 package co.enear.fs2.kafka
 
-import scala.collection.JavaConverters._
 import fs2._
 import fs2.util.{ Async, Functor }
 import fs2.util.syntax._
 import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.errors.WakeupException
 import org.apache.kafka.clients.consumer._
 import util.Properties
+import internal._
 
 object Consumer {
 
@@ -60,22 +59,6 @@ final case class PartitionOfsset(key: GroupTopicPartition, offset: Long)
 
 final case class Commited(partitionOffsets: Map[TopicPartition, Long])
 
-private[kafka] object RebalanceListener {
-  def apply(onAssigned: Iterable[TopicPartition] => Unit, onRevoked: Iterable[TopicPartition] => Unit) = new ConsumerRebalanceListener {
-    override def onPartitionsAssigned(partitions: java.util.Collection[TopicPartition]) = onAssigned(partitions.asScala)
-    override def onPartitionsRevoked(partitions: java.util.Collection[TopicPartition]) = onRevoked(partitions.asScala)
-  }
-
-  def doNothing = apply(_ => (), _ => ())
-  def wrapePaused(consumer: Consumer[_, _], listener: ConsumerRebalanceListener) = new ConsumerRebalanceListener {
-    override def onPartitionsAssigned(partitions: java.util.Collection[TopicPartition]) = {
-      consumer.pause(partitions)
-      listener.onPartitionsAssigned(partitions)
-    }
-    override def onPartitionsRevoked(partitions: java.util.Collection[TopicPartition]) = listener.onPartitionsRevoked(partitions)
-  }
-}
-
 trait Commitable[F[_]] {
   def commit: F[Commited]
 }
@@ -88,121 +71,3 @@ trait Commiter[F[_]] {
   def commit(partitions: Map[TopicPartition, Long]): F[Commited]
 }
 
-private[kafka] class ConsumerControlImpl[F[_], K, V](consumer: Consumer[K, V], settings: ConsumerSettings[K, V], pollThreadTasksQueue: async.mutable.Queue[F, F[Unit]])(implicit F: Async[F]) extends ConsumerControl[F, K, V] {
-
-  override def close = F.delay {
-    consumer.close()
-  }
-
-  override def assignment = F.delay {
-    consumer.assignment().asScala.toSet
-  }
-
-  def subscription = F.delay {
-    consumer.subscription().asScala.toSet
-  }
-
-  override def assign(assignment: ManualSubscription) = F.delay {
-    assignment match {
-      case Subscriptions.ManualAssignment(topicPartitions) => consumer.assign(topicPartitions.asJava)
-      case Subscriptions.ManualAssignmentWithOffsets(partitionOffsets) =>
-        consumer.assign(partitionOffsets.keySet.asJava)
-        partitionOffsets foreach { case (topicPartition, offset) => consumer.seek(topicPartition, offset) }
-    }
-  }
-
-  override def subscribe(subscription: AutoSubscription, listener: ConsumerRebalanceListener) = subscription match {
-    case Subscriptions.TopicsSubscription(topics) => F.delay { consumer.subscribe(topics.asJava, listener) }
-    case Subscriptions.TopicsPatternSubscription(pattern) => F.delay { consumer.subscribe(java.util.regex.Pattern.compile(pattern), listener) }
-  }
-
-  override def poll = F.delay {
-    try {
-      Chunk.seq(consumer.poll(settings.pollInterval.toMillis).iterator.asScala.toSeq)
-    } catch {
-      case e: WakeupException => Chunk.empty
-    }
-  }
-
-  override def pollStream = for {
-    outputQueue <- Stream.eval(async.mutable.Queue.synchronousNoneTerminated[F, Chunk[ConsumerRecord[K, V]]])
-    done <- Stream.eval(async.mutable.Signal(false))
-    pollingThread = Stream.eval(poll)
-      .flatMap { chunk =>
-        Stream.eval {
-          // If we have any tasks to evaluate in the same thread we poll do it here
-          for {
-            size <- pollThreadTasksQueue.size.get
-            tasks <- if (size > 0) pollThreadTasksQueue.dequeueBatch1(size) else F.pure(Chunk.empty)
-            _ <- Stream.chunk(tasks).evalMap(identity _).run
-          } yield chunk
-        }
-      }
-      .filter(_.nonEmpty)
-      .repeat
-      .map(Option.apply _)
-      .to(outputQueue.enqueue)
-      .interruptWhen(done)
-      .onFinalize(outputQueue.enqueue1(None))
-
-    outputThread = outputQueue.dequeue
-      .unNoneTerminate
-      .flatMap(Stream.chunk _)
-    record <- (pollingThread mergeDrainL outputThread)
-      .onFinalize(done.set(true) >> wakeup)
-  } yield record
-
-  override def wakeup = F.delay {
-    consumer.wakeup()
-  }
-
-  // This enqueues the commit task to the polling thread tasks queue
-  override def commiter = new Commiter[F] {
-    override def commit(partitionsAndOffsets: Map[TopicPartition, Long]) = F.async[Commited] { register =>
-      pollThreadTasksQueue.enqueue1 {
-        F.delay {
-          consumer.commitAsync(partitionsAndOffsets.mapValues(offset => new OffsetAndMetadata(offset)).asJava, new OffsetCommitCallback {
-            def onComplete(partitionOffsets: java.util.Map[TopicPartition, OffsetAndMetadata], exception: Exception) = {
-              if (exception != null) register(Left(exception))
-              else register(Right(Commited(partitionOffsets.asScala.toMap.mapValues(_.offset))))
-            }
-          })
-        }
-      }
-    }
-  }
-
-}
-
-private[kafka] trait MessageBuilder[F[_], K, V] {
-  type Message
-  def build(consumer: ConsumerControl[F, K, V]): Pipe[F, ConsumerRecord[K, V], Message]
-}
-
-private[kafka] class PlainMessageBuilder[F[_], K, V] extends MessageBuilder[F, K, V] {
-  type Message = ConsumerRecord[K, V]
-  override def build(consumer: ConsumerControl[F, K, V]) = pipe.id
-}
-
-private[kafka] class CommitableMessageBuilder[F[_], K, V](settings: ConsumerSettings[K, V])(implicit F: Async[F]) extends MessageBuilder[F, K, V] {
-  type Message = CommitableMessage[F, ConsumerRecord[K, V]]
-  override def build(consumer: ConsumerControl[F, K, V]): Pipe[F, ConsumerRecord[K, V], Message] = _.map { record =>
-    val offset = PartitionOfsset(GroupTopicPartition(settings.properties(ConsumerConfig.GROUP_ID_CONFIG), record.topic(), record.partition()), record.offset())
-    val commitableOffset = new CommitableOffset[F] {
-      override val partitionOffset = offset
-      override def commit = consumer.commiter.commit(Map(new TopicPartition(partitionOffset.key.topic, partitionOffset.key.partition) -> (offset.offset + 1)))
-    }
-    CommitableMessage[F, ConsumerRecord[K, V]](record, commitableOffset)
-  }
-}
-
-trait Subscriber[F[_], K, V, -S <: Subscription] {
-  def subscribe(consumer: ConsumerControl[F, K, V])(subscription: S): F[Unit]
-}
-
-private[kafka] class SimpleSubscriber[F[_]: Async, K, V] extends Subscriber[F, K, V, Subscription] {
-  override def subscribe(consumer: ConsumerControl[F, K, V])(subscription: Subscription) = subscription match {
-    case s: AutoSubscription => consumer.subscribe(s, RebalanceListener.doNothing)
-    case s: ManualSubscription => consumer.assign(s)
-  }
-}
