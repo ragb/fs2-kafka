@@ -10,7 +10,7 @@ import org.apache.kafka.clients.consumer._
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.errors.WakeupException
 
-private[kafka] class ConsumerControlImpl[F[_], K, V](consumer: Consumer[K, V], settings: ConsumerSettings[K, V], pollThreadTasksQueue: async.mutable.Queue[F, F[Unit]])(implicit F: Async[F]) extends ConsumerControl[F, K, V] {
+private[kafka] class ConsumerControlImpl[F[_], K, V](consumer: Consumer[K, V], val settings: ConsumerSettings[K, V], pollThreadTasksQueue: async.mutable.Queue[F, F[Unit]])(implicit F: Async[F]) extends ConsumerControl[F, K, V] {
 
   override def close = F.delay {
     consumer.close()

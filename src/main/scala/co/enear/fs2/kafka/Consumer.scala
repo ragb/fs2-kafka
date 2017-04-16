@@ -8,31 +8,63 @@ import org.apache.kafka.clients.consumer._
 import util.Properties
 import internal._
 
-object Consumer {
+trait Consumer[F[_], K, V] {
 
-  private[kafka] def createKafkaConsumer[F[_], K, V](
-    settings: ConsumerSettings[K, V]
-  )(implicit F: Async[F]): F[ConsumerControl[F, K, V]] = async.mutable.Queue.unbounded[F, F[Unit]].map { tasksQueue =>
-    new ConsumerControlImpl[F, K, V](
-      new KafkaConsumer(Properties.fromMap(settings.properties), settings.keyDeserializer, settings.valueDeserializer), settings, tasksQueue
-    )
-  }
+  private[kafka] def createConsumer: F[ConsumerControl[F, K, V]]
 
-  private[kafka] def makeConsumerRecordStream[F[_]: Async, K, V, O, S <: Subscription](settings: ConsumerSettings[K, V], subscription: S, subscriber: Subscriber[F, K, V, S])(use: ConsumerControl[F, K, V] => Stream[F, O]): Stream[F, O] = Stream.bracket(createKafkaConsumer[F, K, V](settings))({ consumer =>
+  private[kafka] def makeConsumerRecordStream[O, S <: Subscription](subscription: S, subscriber: Subscriber[F, K, V, S])(use: ConsumerControl[F, K, V] => Stream[F, O])(implicit F: Async[F]): Stream[F, O] = Stream.bracket(createConsumer)({ consumer =>
     Stream.eval_(subscriber.subscribe(consumer)(subscription)) ++ use(consumer)
   }, _.close)
 
-  private[kafka] def messageStream[F[_]: Async, K, V, S <: Subscription](settings: ConsumerSettings[K, V], subscription: S, subscriber: Subscriber[F, K, V, S], builder: MessageBuilder[F, K, V]): Stream[F, builder.Message] = makeConsumerRecordStream(settings, subscription, subscriber) { (consumer: ConsumerControl[F, K, V]) =>
+  private[kafka] def messageStream[S <: Subscription](subscription: S, subscriber: Subscriber[F, K, V, S], builder: MessageBuilder[F, K, V])(implicit F: Async[F]): Stream[F, builder.Message] = makeConsumerRecordStream(subscription, subscriber) { (consumer: ConsumerControl[F, K, V]) =>
     consumer.pollStream
       .through(builder.build(consumer)(_))
   }
 
-  def plainStream[F[_]: Async, K, V](settings: ConsumerSettings[K, V], Subscription: Subscription): Stream[F, ConsumerRecord[K, V]] = messageStream[F, K, V, Subscription](settings, Subscription, new SimpleSubscriber, new PlainMessageBuilder[F, K, V])
+  def plainStream(subscription: Subscription)(implicit F: Async[F]): Stream[F, ConsumerRecord[K, V]] = messageStream[Subscription](subscription, new SimpleSubscriber, new PlainMessageBuilder[F, K, V])
 
-  def commitableMessageStream[F[_]: Async, K, V, S <: Subscription](settings: ConsumerSettings[K, V], Subscription: S): Stream[F, CommitableMessage[F, ConsumerRecord[K, V]]] = messageStream[F, K, V, S](settings, Subscription, new SimpleSubscriber[F, K, V], new CommitableMessageBuilder(settings))
+  def commitableMessageStream[S <: Subscription](subscription: S)(implicit F: Async[F]): Stream[F, CommitableMessage[F, ConsumerRecord[K, V]]] = messageStream[S](subscription, new SimpleSubscriber[F, K, V], new CommitableMessageBuilder)
+}
+
+object Consumer {
+
+  def apply[F[+_], K, V](
+    settings: ConsumerSettings[K, V]
+  )(implicit F: Async[F]): Consumer[F, K, V] = {
+    val create = async.mutable.Queue.unbounded[F, F[Unit]].map { tasksQueue =>
+      new ConsumerControlImpl[F, K, V](
+        new KafkaConsumer(Properties.fromMap(settings.properties), settings.keyDeserializer, settings.valueDeserializer), settings, tasksQueue
+      )
+    }
+    new Consumer[F, K, V] {
+      override val createConsumer = create
+    }
+  }
+
+  def createMockConsumer[F[+_], K, V](settings: ConsumerSettings[K, V], records: Stream[F, ConsumerRecord[K, V]])(implicit F: Async[F]): Consumer[F, K, V] = {
+    val rawConsumer = new MockConsumer[K, V](OffsetResetStrategy.EARLIEST)
+    val createAndRunStream = records
+      .to {
+        _.evalMap {
+          record =>
+            F.delay {
+              rawConsumer.addRecord(record)
+            }
+        }
+      }
+      .run
+      .start >> async.mutable.Queue.unbounded[F, F[Unit]].map { queue =>
+        new ConsumerControlImpl(rawConsumer, settings, queue)
+      }
+    new Consumer[F, K, V] {
+      override val createConsumer = createAndRunStream
+    }
+
+  }
 }
 
 trait ConsumerControl[F[_], K, V] {
+  def settings: ConsumerSettings[K, V]
   def close: F[Unit]
   def assignment: F[Set[TopicPartition]]
   def subscription: F[Set[String]]
@@ -70,4 +102,3 @@ trait CommitableOffset[F[_]] extends Commitable[F] {
 trait Commiter[F[_]] {
   def commit(partitions: Map[TopicPartition, Long]): F[Commited]
 }
-
