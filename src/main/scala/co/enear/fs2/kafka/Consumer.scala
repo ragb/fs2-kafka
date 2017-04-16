@@ -41,26 +41,6 @@ object Consumer {
     }
   }
 
-  def createMockConsumer[F[+_], K, V](settings: ConsumerSettings[K, V], records: Stream[F, ConsumerRecord[K, V]])(implicit F: Async[F]): Consumer[F, K, V] = {
-    val rawConsumer = new MockConsumer[K, V](OffsetResetStrategy.EARLIEST)
-    val createAndRunStream = records
-      .to {
-        _.evalMap {
-          record =>
-            F.delay {
-              rawConsumer.addRecord(record)
-            }
-        }
-      }
-      .run
-      .start >> async.mutable.Queue.unbounded[F, F[Unit]].map { queue =>
-        new ConsumerControlImpl(rawConsumer, settings, queue)
-      }
-    new Consumer[F, K, V] {
-      override val createConsumer = createAndRunStream
-    }
-
-  }
 }
 
 trait ConsumerControl[F[_], K, V] {
