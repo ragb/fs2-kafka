@@ -1,7 +1,7 @@
 ## fs2 Kafka ##
 
+<a href='https://bintray.com/batista/maven/fs2-kafka?source=watch'><img src='https://www.bintray.com/docs/images/bintray_badge_bw.png' alt='Get automatic notifications about new "fs2-kafka" versions'></a>
 
-<a href='https://bintray.com/batista/maven/fs2-kafka?source=watch' alt='Get automatic notifications about new "fs2-kafka" versions'><img src='https://www.bintray.com/docs/images/bintray_badge_color.png'></a>
 
 [fs2][fs2] wraper for [Apache Kafka][kafka]. Wrapes the Java consumer/producer Kafka APIs.
 
