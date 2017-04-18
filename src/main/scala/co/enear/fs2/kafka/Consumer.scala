@@ -13,94 +13,50 @@ trait Consumer[F[_], K, V] {
 
   private[kafka] def createConsumer: F[ConsumerControl[F, K, V]]
 
-  private[kafka] def makeConsumerRecordStream[O, S <: Subscription](subscription: S, subscriber: Subscriber[F, K, V, S])(use: ConsumerControl[F, K, V] => Stream[F, O])(implicit F: Async[F]): Stream[F, O] = Stream.bracket(createConsumer)({ consumer =>
-    Stream.eval_(subscriber.subscribe(consumer)(subscription)) ++ use(consumer)
-  }, _.close)
+  trait StreamType {
+    type OutStreamType[_] <: Stream[F, _]
+    private[kafka] def makeStream(
+      subscription: Subscription,
+      builder: MessageBuilder[F, K, V]
+    )(implicit F: Async[F]): OutStreamType[builder.Message]
 
-  private[kafka] def messageStream[S <: Subscription](subscription: S, subscriber: Subscriber[F, K, V, S], builder: MessageBuilder[F, K, V])(implicit F: Async[F]): Stream[F, builder.Message] = makeConsumerRecordStream(subscription, subscriber) { (consumer: ConsumerControl[F, K, V]) =>
-    consumer.pollStream
-      .flatMap(consumerRecords => Stream.emits(consumerRecords.iterator.asScala.toSeq))
-      .through(builder.build(consumer)(_))
+    def plainMessages(
+      subscription: Subscription
+    )(implicit F: Async[F]): OutStreamType[ConsumerRecord[K, V]] = makeStream(subscription, new PlainMessageBuilder[F, K, V])
+    def commitableMessages(
+      subscription: Subscription
+    )(implicit F: Async[F]): OutStreamType[CommitableMessage[F, ConsumerRecord[K, V]]] = makeStream(subscription, new CommitableMessageBuilder[F, K, V])
   }
-
-  def plainStream(subscription: Subscription)(implicit F: Async[F]): Stream[F, ConsumerRecord[K, V]] = messageStream[Subscription](subscription, new SimpleSubscriber, new PlainMessageBuilder[F, K, V])
-
-  def commitableMessageStream[S <: Subscription](subscription: S)(implicit F: Async[F]): Stream[F, CommitableMessage[F, ConsumerRecord[K, V]]] = messageStream[S](subscription, new SimpleSubscriber[F, K, V], new CommitableMessageBuilder)
-
-  private[kafka] def makeInnerPartitionedStreams(
-    subscriptionEventsQueue: async.mutable.Queue[F, SubscriptionEvent],
-    openedStreams: Async.Ref[F, Map[TopicPartition, async.mutable.Queue[F, Option[Chunk[ConsumerRecord[K, V]]]]]],
-    killSignal: async.mutable.Signal[F, Boolean]
-  )(
-    consumer: ConsumerControl[F, K, V]
-  )(implicit F: Async[F]): Stream[F, (TopicPartition, Stream[F, ConsumerRecord[K, V]])] = {
-    subscriptionEventsQueue.dequeue
-      .flatMap { event =>
-        event match {
-          case SubscriptionEvent.PartitionsAssigned(partitions) =>
-            // Create one queue for each opened partition
-            val nowOpen = partitions.toSeq.map { partition =>
-              async.mutable.Queue.synchronousNoneTerminated[F, Chunk[ConsumerRecord[K, V]]].map { queue =>
-                (partition, queue)
-              }
-            }
-              .sequence
-            Stream.eval(nowOpen)
-              .flatMap { open =>
-                Stream.eval_(openedStreams.modify(_ ++ open.toMap)) ++
-                  Stream.emits {
-                    open.map {
-                      case (partition, queue) =>
-                        (partition,
-                          Stream.eval_(consumer.resume(Set(partition))) ++ queue
-                          .dequeue
-                          .unNoneTerminate
-                          .flatMap(Stream.chunk _)
-                          .interruptWhen(killSignal))
-                    }
-                  }
-              }
-
-          case SubscriptionEvent.PartitionsRevoked(revoked) =>
-            Stream.eval_ {
-              openedStreams.get flatMap { open =>
-                revoked.toSeq.map { open.apply _ }
-                  .map { queue =>
-                    queue.enqueue1(None)
-                  }
-                  .sequence >> openedStreams.modify(_ -- revoked)
-              }
-            }
-        }
-
-      }
-  }
-
-  private[kafka] def partitionedStream(subscription: AutoSubscription, builder: MessageBuilder[F, K, V])(implicit F: Async[F]): Stream[F, (TopicPartition, Stream[F, builder.Message])] = for {
-    openedStreams <- Stream.eval(F.refOf[Map[TopicPartition, async.mutable.Queue[F, Option[Chunk[ConsumerRecord[K, V]]]]]](Map.empty))
-    subscriptionEventsQueue <- Stream.eval(async.mutable.Queue.unbounded[F, SubscriptionEvent])
-    killSignal <- Stream.eval(async.mutable.Signal[F, Boolean](false))
-    subscriber = new AsyncSubscriber[F, K, V](subscriptionEventsQueue)
-    consumerStream = makeConsumerRecordStream(subscription, subscriber) { consumer =>
-      val partitionsStream = makeInnerPartitionedStreams(subscriptionEventsQueue, openedStreams, killSignal)(consumer)
-        .map { case (partition, stream) => (partition, stream.through(builder.build(consumer)(_))) }
-
-      val pollStream = Stream.eval_(subscriber.subscribe(consumer)(subscription)) ++
+  val simpleStream = new StreamType {
+    type OutStreamType[A] = Stream[F, A]
+    private[kafka] def makeStream(
+      subscription: Subscription,
+      builder: MessageBuilder[F, K, V]
+    )(implicit F: Async[F]): OutStreamType[builder.Message] = Stream.bracket(createConsumer)({ consumer =>
+      val subscriber = new SimpleSubscriber[F, K, V]
+      Stream.eval_(subscriber.subscribe(consumer)(subscription)) ++
         consumer.pollStream
-        .evalMap { records =>
-          openedStreams.get.flatMap { open =>
-            records.partitions.asScala.toSeq.map { partition =>
-              val partitionRecords = records.records(partition).asScala
-              open(partition).enqueue1(Some(Chunk.seq(partitionRecords)))
-            }
-              .sequence
+        .flatMap(consumerRecords => Stream.emits(consumerRecords.iterator.asScala.toSeq))
+        .through(builder.build(consumer)(_))
+    }, _.close)
+  }
+
+  val partitionedStreams = new StreamType {
+    type OutStreamType[A] = Stream[F, (TopicPartition, Stream[F, A])]
+
+    private[kafka] def makeStream(
+      subscription: Subscription,
+      builder: MessageBuilder[F, K, V]
+    )(implicit F: Async[F]): Stream[F, (TopicPartition, Stream[F, builder.Message])] =
+      Stream.bracket(createConsumer)({ consumer: ConsumerControl[F, K, V] =>
+        Stream.eval(PartitionedStreamManager[F, K, V](consumer))
+          .flatMap { manager =>
+            manager.partitionedStream(subscription, builder)
           }
-        }
-      (pollStream mergeDrainL partitionsStream)
-        .onFinalize(killSignal.set(true))
-    }
-    partitionAndStream <- consumerStream
-  } yield partitionAndStream
+      }, _.close)
+
+  }
+
 }
 
 object Consumer {
@@ -163,3 +119,4 @@ trait CommitableOffset[F[_]] extends Commitable[F] {
 trait Commiter[F[_]] {
   def commit(partitions: Map[TopicPartition, Long]): F[Commited]
 }
+

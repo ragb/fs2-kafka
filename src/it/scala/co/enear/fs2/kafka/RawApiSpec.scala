@@ -39,7 +39,7 @@ class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specificat
           .drain
         }
 
-      val consumerStream = time.sleep_[Task](2 seconds) ++  Consumer[Task, String, String](consumerSettings).plainStream(subscription)
+      val consumerStream = time.sleep_[Task](2 seconds) ++  Consumer[Task, String, String](consumerSettings).simpleStream.plainMessages(subscription)
         .map(_.value)
         .take(1)
 
@@ -58,7 +58,7 @@ class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specificat
             .to(producerControl.sendSink)
         }
 
-      val consumerStream = time.sleep_[Task](2 seconds) ++  Consumer[Task, String, String](consumerSettings).plainStream(subscription)
+      val consumerStream = time.sleep_[Task](2 seconds) ++  Consumer[Task, String, String](consumerSettings).simpleStream.plainMessages(subscription)
         .map(_.value)
         .take(count.toLong)
       .map(_ => 1)
@@ -79,7 +79,7 @@ sum <- consumerStream.runFold[Int](0)(_ + _)
           .drain
         }
 
-      val consumerStream = time.sleep_[Task](2 seconds) ++ Consumer[Task, String, String](consumerSettings.withAutoCommit(false)).commitableMessageStream(subscription)
+      val consumerStream = time.sleep_[Task](2 seconds) ++ Consumer[Task, String, String](consumerSettings.withAutoCommit(false)).simpleStream.commitableMessages(subscription)
         .evalMap(_.commitableOffset.commit)
       .take(1)
     

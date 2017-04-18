@@ -25,7 +25,7 @@ class ConsumerSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specific
       val messages = (1 to 10).toSeq
       val records = Stream.emits[Pure, Int](messages).
         map(offset => new ConsumerRecord[String, String](testTopic, 0, offset.toLong, "key", offset.toString))
-      val consumerStream = MockConsumer[Task, String, String](settings, manualSubscription, records).plainStream(manualSubscription)
+      val consumerStream = MockConsumer[Task, String, String](settings, manualSubscription, records).simpleStream.plainMessages(manualSubscription)
         .take(messages.size.toLong)
 
       consumerStream.runLog
@@ -34,7 +34,7 @@ class ConsumerSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specific
     }
 
     "commit messages" in {
-      val consumerStream = MockConsumer[Task, String, String](settings, manualSubscription, records).commitableMessageStream(manualSubscription)
+      val consumerStream = MockConsumer[Task, String, String](settings, manualSubscription, records).simpleStream.commitableMessages(manualSubscription)
         .take(messages.size.toLong)
         .evalMap(_.commitableOffset.commit)
       consumerStream.runLog

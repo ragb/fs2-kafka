@@ -40,7 +40,7 @@ private[kafka] object SubscriptionEvent {
  * Note that partitions are paused on assignment so they can be assynchronously resumed
  *  and no message are lost
  */
-private[kafka] class AsyncSubscriber[F[_], K, V](queue: async.mutable.Queue[F, SubscriptionEvent])(implicit F: Async[F]) extends Subscriber[F, K, V, AutoSubscription] {
+private[kafka] class AsyncSubscriber[F[_], K, V](queue: async.mutable.Queue[F, SubscriptionEvent])(implicit F: Async[F]) extends Subscriber[F, K, V, Subscription] {
   import SubscriptionEvent._
   private def enqueue(event: SubscriptionEvent) = {
     queue.enqueue1(event).unsafeRunAsync { _ => () }
@@ -52,7 +52,13 @@ private[kafka] class AsyncSubscriber[F[_], K, V](queue: async.mutable.Queue[F, S
     enqueue(PartitionsRevoked(revoked.toSet))
   })
 
-  override def subscribe(consumer: ConsumerControl[F, K, V])(subscription: AutoSubscription) =
-    consumer.subscribe(subscription, RebalanceListener.wrapePaused(consumer.rawConsumer, listener))
+  override def subscribe(consumer: ConsumerControl[F, K, V])(subscription: Subscription) = subscription match {
+    case s: AutoSubscription =>
+      consumer.subscribe(s, RebalanceListener.wrapePaused(consumer.rawConsumer, listener))
+    case s: ManualSubscription =>
+      consumer.assign(s) >> consumer.assignment.flatMap { partitions =>
+        queue.enqueue1(SubscriptionEvent.PartitionsAssigned(partitions))
+      }
 
+  }
 }
