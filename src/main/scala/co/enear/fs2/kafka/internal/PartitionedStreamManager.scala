@@ -10,12 +10,12 @@ import fs2.util.syntax._
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.TopicPartition
 
-private[kafka] class PartitionedStreamManager[F[_]: Async, K, V] private (
+private[kafka] class PartitionedStreamManager[F[_], K, V] private (
     consumer: ConsumerControl[F, K, V],
     subscriptionEventsQueue: Queue[F, SubscriptionEvent],
     killSignal: Signal[F, Boolean],
     openPartitions: Async.Ref[F, Map[TopicPartition, Queue[F, Option[Chunk[ConsumerRecord[K, V]]]]]]
-) {
+)(implicit F: Async[F]) {
 
   /**
    * Reads subscription events from the queue and creates / finishes streams
@@ -47,7 +47,12 @@ private[kafka] class PartitionedStreamManager[F[_]: Async, K, V] private (
                           .dequeue
                           .unNoneTerminate
                           .flatMap(Stream.chunk _)
-                          .interruptWhen(killSignal))
+                          .onFinalize {
+                            consumer.assignment flatMap { partitions =>
+                              if (partitions contains partition) consumer.pause(Set(partition))
+                              else F.pure(())
+                            }
+                          })
                     }
                   }
               }
