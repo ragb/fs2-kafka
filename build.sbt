@@ -11,6 +11,7 @@ lazy val root = (project in file(".")).
       licenses += ("Apache-2.0", url("http://www.apache.org/licenses/LICENSE-2.0"))
     )),
     name := "fs2-kafka",
+    logBuffered in Test := false,
     libraryDependencies ++= Seq(
       fs2Core,
       kafkaClients,

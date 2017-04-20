@@ -1,7 +1,7 @@
 package co.enear.fs2.kafka
 
 import scala.concurrent.duration._
-import testing.MockConsumer
+import testing.{ MockConsumer, MockConsumerControl }
 import org.specs2._
 import org.specs2.concurrent.ExecutionEnv
 
@@ -12,20 +12,20 @@ import org.apache.kafka.common.TopicPartition
 import DefaultSerialization._
 
 class ConsumerSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specification {
-  implicit val strategy = Strategy.fromFixedDaemonPool(16, "worker")
+  implicit val strategy = Strategy.fromCachedDaemonPool("workers")
   val testTopic = "test"
   val manualSubscription = Subscriptions.assignment(Set(new TopicPartition(testTopic, 0)))
   val settings = ConsumerSettings[String, String](50 millis).withGroupId("test")
 
   val messages = (1 to 10).toSeq
-  val records = Stream.emits[Pure, Int](messages).
-    map(offset => new ConsumerRecord[String, String](testTopic, 0, offset.toLong, "key", offset.toString))
+  val recordsStream = (c: MockConsumerControl[Task, String, String]) =>
+    Stream.eval_(c.assign(manualSubscription)) ++
+      Stream.eval_(c.updateBeginningOffsets(Map(new TopicPartition(testTopic, 0) -> 0))) ++
+      Stream.emits[Pure, Int](messages).
+      map(offset => new ConsumerRecord[String, String](testTopic, 0, offset.toLong, "key", offset.toString))
   "consumer" should {
     "Consume messages" in {
-      val messages = (1 to 10).toSeq
-      val records = Stream.emits[Pure, Int](messages).
-        map(offset => new ConsumerRecord[String, String](testTopic, 0, offset.toLong, "key", offset.toString))
-      val consumerStream = MockConsumer[Task, String, String](settings, manualSubscription, records).simpleStream.plainMessages(manualSubscription)
+      val consumerStream = MockConsumer[Task, String, String](settings, recordsStream).simpleStream.plainMessages(manualSubscription)
         .take(messages.size.toLong)
 
       consumerStream.runLog
@@ -34,7 +34,7 @@ class ConsumerSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specific
     }
 
     "commit messages" in {
-      val consumerStream = MockConsumer[Task, String, String](settings, manualSubscription, records).simpleStream.commitableMessages(manualSubscription)
+      val consumerStream = MockConsumer[Task, String, String](settings, recordsStream).simpleStream.commitableMessages(manualSubscription)
         .take(messages.size.toLong)
         .evalMap(_.commitableOffset.commit)
       consumerStream.runLog
@@ -42,19 +42,21 @@ class ConsumerSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specific
     }
 
     "Process concurrent streams from different partitions" in {
-      val numberOfPartitions = 3
+      val numberOfPartitions = 10
       val partitionAndMessages = for {
         partition <- 0 to (numberOfPartitions - 1)
-        offset <- 0 to 10
+        offset <- 0 to 9999
       } yield (partition, offset)
       val partitions = (0 to (numberOfPartitions - 1)).map(new TopicPartition(testTopic, _)).toSet
       val assignment = Subscriptions.assignment(partitions)
-      val records = Stream.emits(partitionAndMessages)
-        .map { case (partition, offset) => new ConsumerRecord[String, String](testTopic, partition, offset.toLong, "key", offset.toString) }
-        .covary[Task]
-      val consumerStreams = MockConsumer[Task, String, String](settings, assignment, records).partitionedStreams.plainMessages(assignment)
+      val recordsStream = (c: MockConsumerControl[Task, String, String]) =>
+        Stream.eval_(c.assignment) ++
+          Stream.eval_(c.updateBeginningOffsets(partitions.map((_, 0l)).toMap)) ++
+          Stream.emits(partitionAndMessages)
+          .map { case (partition, offset) => new ConsumerRecord[String, String](testTopic, partition, offset.toLong, "key", offset.toString) }
+          .covary[Task]
+      val consumerStreams = MockConsumer[Task, String, String](settings, recordsStream).partitionedStreams.plainMessages(assignment)
         .map(_._2)
-        .take(numberOfPartitions.toLong)
       fs2.concurrent.join(numberOfPartitions)(consumerStreams)
         .take(partitionAndMessages.size.toLong)
         .runLog

@@ -47,11 +47,16 @@ private[kafka] class PartitionedStreamManager[F[_], K, V] private (
                           .dequeue
                           .unNoneTerminate
                           .flatMap(Stream.chunk _)
-                          .onFinalize {
-                            consumer.assignment flatMap { partitions =>
-                              if (partitions contains partition) consumer.pause(Set(partition))
-                              else F.pure(())
-                            }
+                          .interruptWhen(killSignal)
+                          .onFinalize[F] {
+                            // Should we even bother to pause the stream when it finalizes?
+                            // Now we only do it if the outer stream was not interrupted 
+                            for {
+                              partitions <- consumer.assignment
+                              interrupted <- killSignal.get
+                              _ <- if ((!interrupted) && (partitions contains partition)) consumer.pause(Set(partition)) else F.pure(())
+                              _ <- openPartitions.modify(_ - partition)
+                            } yield ()
                           })
                     }
                   }
@@ -84,7 +89,8 @@ private[kafka] class PartitionedStreamManager[F[_], K, V] private (
         openPartitions.get.flatMap { open =>
           records.partitions.asScala.toSeq.map { partition =>
             val partitionRecords = records.records(partition).asScala
-            open(partition).enqueue1(Some(Chunk.seq(partitionRecords)))
+            open.get(partition).map { queue => queue.enqueue1(Some(Chunk.seq(partitionRecords))) }
+              .getOrElse(F.pure(()))
           }
             .sequence
         }
@@ -97,7 +103,7 @@ private[kafka] class PartitionedStreamManager[F[_], K, V] private (
 
 private[kafka] object PartitionedStreamManager {
   def apply[F[_]: Async, K, V](consumer: ConsumerControl[F, K, V]): F[PartitionedStreamManager[F, K, V]] = for {
-    queue <- Queue.unbounded[F, SubscriptionEvent]
+    queue <- Queue.synchronous[F, SubscriptionEvent]
     openPartitions <- Async.refOf[F, Map[TopicPartition, Queue[F, Option[Chunk[ConsumerRecord[K, V]]]]]](Map.empty)
     killSignal <- Signal[F, Boolean](false)
   } yield new PartitionedStreamManager[F, K, V](consumer, queue, killSignal, openPartitions)

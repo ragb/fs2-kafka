@@ -25,7 +25,7 @@ private[kafka] class SimpleSubscriber[F[_]: Async, K, V] extends Subscriber[F, K
   }
 }
 
-private[kafka] trait SubscriptionEvent
+sealed private[kafka] trait SubscriptionEvent
 
 private[kafka] object SubscriptionEvent {
 

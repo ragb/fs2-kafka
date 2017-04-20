@@ -10,30 +10,26 @@ import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.KafkaException
 
 object MockConsumer {
-  def apply[F[+_], K, V](settings: ConsumerSettings[K, V], assignment: ManualSubscription, records: Stream[F, ConsumerRecord[K, V]])(implicit F: Async[F]): Consumer[F, K, V] = {
+  def apply[F[+_], K, V](settings: ConsumerSettings[K, V], recordsStream: MockConsumerControl[F, K, V] => Stream[F, ConsumerRecord[K, V]])(implicit F: Async[F]): Consumer[F, K, V] = {
     val rawConsumer = new KafkaMockConsumer[K, V](OffsetResetStrategy.EARLIEST)
-    val addRecordsStream = records
-      .to {
-        _.evalMap {
-          record =>
-            F.delay {
-              rawConsumer.addRecord(record)
-            }
+    val addRecordsStream = (c: MockConsumerControl[F, K, V]) =>
+      recordsStream(c)
+        .to {
+          _.evalMap {
+            record =>
+              F.delay {
+                rawConsumer.addRecord(record)
+              }
+          }
         }
-      }
-      .run
+        .run
     val create = async.mutable.Queue.unbounded[F, F[Unit]].map { queue =>
       new MockConsumerControlImpl(rawConsumer, settings, queue)
     }
     new Consumer[F, K, V] {
       override val createConsumer = for {
         consumer <- create
-        _ <- consumer.assign(assignment)
-        _ <- consumer.assignment flatMap { partitions =>
-          val offsets = partitions.map(tp => (tp, 0L)).toMap
-          consumer.updateBeginningOffsets(offsets)
-        }
-        _ <- addRecordsStream
+        _ <- addRecordsStream(consumer).start
       } yield consumer
 
     }
