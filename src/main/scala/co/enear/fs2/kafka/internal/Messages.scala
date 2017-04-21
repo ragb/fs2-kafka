@@ -2,7 +2,6 @@ package co.enear.fs2.kafka
 package internal
 
 import fs2._
-import fs2.util.Async
 
 import org.apache.kafka.clients.consumer._
 import org.apache.kafka.common.TopicPartition
@@ -17,7 +16,7 @@ private[kafka] class PlainMessageBuilder[F[_], K, V] extends MessageBuilder[F, K
   override def build(consumer: ConsumerControl[F, K, V]) = pipe.id
 }
 
-private[kafka] class CommitableMessageBuilder[F[_], K, V](implicit F: Async[F]) extends MessageBuilder[F, K, V] {
+private[kafka] class CommitableMessageBuilder[F[_], K, V]() extends MessageBuilder[F, K, V] {
   type Message = CommitableMessage[F, ConsumerRecord[K, V]]
   override def build(consumer: ConsumerControl[F, K, V]): Pipe[F, ConsumerRecord[K, V], Message] = _.map { record =>
     val offset = PartitionOfsset(GroupTopicPartition(consumer.settings.properties(ConsumerConfig.GROUP_ID_CONFIG), record.topic(), record.partition()), record.offset())
