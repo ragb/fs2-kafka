@@ -96,7 +96,6 @@ private[kafka] class PartitionedStreamManager[F[_], K, V] private (
 
     (pollStream.drain merge partitionsStream)
       .onFinalize(killSignal.set(true))
-      .onError { case e => println(e); Stream.fail(e) }
   }
 
 }
