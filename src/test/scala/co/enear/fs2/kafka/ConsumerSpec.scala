@@ -3,7 +3,6 @@ package co.enear.fs2.kafka
 import scala.concurrent.duration._
 import testing.{ MockConsumer, MockConsumerControl }
 import org.specs2._
-import org.specs2.concurrent.ExecutionEnv
 
 import fs2._
 import org.apache.kafka.clients.consumer._
@@ -11,7 +10,7 @@ import org.apache.kafka.common.TopicPartition
 
 import DefaultSerialization._
 
-class ConsumerSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specification {
+class ConsumerSpec extends mutable.Specification {
   implicit val strategy = Strategy.fromCachedDaemonPool("workers")
   val testTopic = "test"
   val manualSubscription = Subscriptions.assignment(Set(new TopicPartition(testTopic, 0)))
