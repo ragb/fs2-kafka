@@ -14,22 +14,15 @@ object MockConsumer {
     val rawConsumer = new KafkaMockConsumer[K, V](OffsetResetStrategy.EARLIEST)
     val addRecordsStream = (c: MockConsumerControl[F, K, V]) =>
       recordsStream(c)
-        .to {
-          _.evalMap {
-            record =>
-              F.delay {
-                rawConsumer.addRecord(record)
-              }
-          }
-        }
-        .run
+        .evalMap(c.addRecord _)
+
     val create = async.mutable.Queue.unbounded[F, F[Unit]].map { queue =>
       new MockConsumerControlImpl(rawConsumer, settings, queue)
     }
     new Consumer[F, K, V] {
       override val createConsumer = for {
         consumer <- create
-        _ <- addRecordsStream(consumer).start
+        _ <- addRecordsStream(consumer).run
       } yield consumer
 
     }

@@ -4,7 +4,6 @@ package internal
 import scala.collection.JavaConverters._
 import fs2._
 import fs2.util.Async
-import fs2.util.syntax._
 
 import org.apache.kafka.clients.consumer._
 import org.apache.kafka.common.TopicPartition
@@ -46,33 +45,20 @@ private[kafka] class ConsumerControlImpl[F[_], K, V](
     rawConsumer.poll(settings.pollInterval.toMillis)
   }
 
-  override def pollStream = for {
-    outputQueue <- Stream.eval(async.mutable.Queue.synchronousNoneTerminated[F, ConsumerRecords[K, V]])
-    done <- Stream.eval(async.mutable.Signal(false))
-    pollingThread = Stream.eval(poll)
-      .flatMap { records =>
-        Stream.eval {
-          // If we have any tasks to evaluate in the same thread we poll do it here
-          for {
-            size <- pollThreadTasksQueue.size.get
-            tasks <- if (size > 0) pollThreadTasksQueue.dequeueBatch1(size) else F.pure(Chunk.empty)
-            _ <- Stream.chunk(tasks).evalMap(identity _).run
-          } yield records
-        }
-      }
-      .filter(_.count > 0)
-      .onError { case e: WakeupException => Stream.empty }
-      .repeat
-      .map(Option.apply _)
-      .to(outputQueue.enqueue)
-      .interruptWhen(done)
-      .onFinalize(outputQueue.enqueue1(None))
-
-    outputThread = outputQueue.dequeue
-      .unNoneTerminate
-    records <- (pollingThread mergeDrainL outputThread)
-      .onFinalize(wakeup >> done.set(true))
-  } yield records
+  override def pollStream = Stream.eval(poll)
+    .flatMap { records =>
+      // If we have any tasks to evaluate in the same thread we call poll, do it here
+      Stream.eval(pollThreadTasksQueue.size.get)
+        .filter(_ > 0)
+        .through(pollThreadTasksQueue.dequeueBatch)
+        .evalMap(identity _)
+        .drain ++
+        Stream[F, ConsumerRecords[K, V]](records)
+    }
+    .onError { case e: WakeupException => Stream.empty }
+    .filter(_.count > 0)
+    .repeat
+    .prefetch
 
   override def wakeup = F.delay {
     rawConsumer.wakeup()

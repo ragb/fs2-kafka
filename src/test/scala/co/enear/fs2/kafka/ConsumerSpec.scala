@@ -48,14 +48,14 @@ class ConsumerSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specific
         offset <- 0 to 9999
       } yield (partition, offset)
       val partitions = (0 to (numberOfPartitions - 1)).map(new TopicPartition(testTopic, _)).toSet
-      val assignment = Subscriptions.assignment(partitions)
-      val recordsStream = (c: MockConsumerControl[Task, String, String]) =>
-        Stream.eval_(c.assignment) ++
-          Stream.eval_(c.updateBeginningOffsets(partitions.map((_, 0l)).toMap)) ++
+      val assignment = Subscriptions.assignmentWithOffsets(partitions.map(_ -> 0l).toMap)
+      val partitionRecordsStream = (c: MockConsumerControl[Task, String, String]) =>
+        Stream.eval(c.assign(assignment)) >>
+          Stream.eval(c.updateBeginningOffsets(partitions.map((_, 0l)).toMap)) >>
           Stream.emits(partitionAndMessages)
           .map { case (partition, offset) => new ConsumerRecord[String, String](testTopic, partition, offset.toLong, "key", offset.toString) }
-          .covary[Task]
-      val consumerStreams = MockConsumer[Task, String, String](settings, recordsStream).partitionedStreams.plainMessages(assignment)
+
+      val consumerStreams = MockConsumer[Task, String, String](settings, partitionRecordsStream).partitionedStreams.plainMessages(assignment)
         .map(_._2)
       fs2.concurrent.join(numberOfPartitions)(consumerStreams)
         .take(partitionAndMessages.size.toLong)

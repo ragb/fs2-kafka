@@ -1,7 +1,6 @@
 package co.enear.fs2.kafka
 package internal
 
-import fs2._
 import fs2.util.Async
 import fs2.util.syntax._
 import org.apache.kafka.common.TopicPartition
@@ -25,31 +24,18 @@ private[kafka] class SimpleSubscriber[F[_]: Async, K, V] extends Subscriber[F, K
   }
 }
 
-sealed private[kafka] trait SubscriptionEvent
-
-private[kafka] object SubscriptionEvent {
-
-  final case class PartitionsAssigned(partitions: Set[TopicPartition]) extends SubscriptionEvent
-
-  final case class PartitionsRevoked(partitions: Set[TopicPartition]) extends SubscriptionEvent
-}
-
 /**
- * Subscribes to partitions putting subscription events on a queue
+ * Subscribes to partitions notifying provided callbacks
  *
  * Note that partitions are paused on assignment so they can be assynchronously resumed
- *  and no message are lost
+ *  and no message is lost
  */
-private[kafka] class AsyncSubscriber[F[_], K, V](queue: async.mutable.Queue[F, SubscriptionEvent])(implicit F: Async[F]) extends Subscriber[F, K, V, Subscription] {
-  import SubscriptionEvent._
-  private def enqueue(event: SubscriptionEvent) = {
-    queue.enqueue1(event).unsafeRunAsync { _ => () }
-    ()
-  }
+private[kafka] class AsyncSubscriber[F[_], K, V](onAssignedCB: Set[TopicPartition] => F[Unit], onRevokedCB: Set[TopicPartition] => F[Unit])(implicit F: Async[F]) extends Subscriber[F, K, V, Subscription] {
+
   val listener = RebalanceListener({ assigned =>
-    enqueue(PartitionsAssigned(assigned.toSet))
+    onAssignedCB(assigned.toSet).unsafeRunAsync { _ => () }
   }, { revoked =>
-    enqueue(PartitionsRevoked(revoked.toSet))
+    onRevokedCB(revoked.toSet).unsafeRunAsync { _ => () }
   })
 
   override def subscribe(consumer: ConsumerControl[F, K, V])(subscription: Subscription) = subscription match {
@@ -57,7 +43,8 @@ private[kafka] class AsyncSubscriber[F[_], K, V](queue: async.mutable.Queue[F, S
       consumer.subscribe(s, RebalanceListener.wrapePaused(consumer.rawConsumer, listener))
     case s: ManualSubscription =>
       consumer.assign(s) >> consumer.assignment.flatMap { partitions =>
-        queue.enqueue1(SubscriptionEvent.PartitionsAssigned(partitions))
+        consumer.pause(partitions) >>
+          onAssignedCB(partitions)
       }
 
   }
