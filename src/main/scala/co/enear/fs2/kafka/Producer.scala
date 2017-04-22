@@ -1,15 +1,15 @@
 package co.enear.fs2.kafka
 
+import util.Properties
 import internal._
 import fs2._
 import fs2.util.Async
 
 import org.apache.kafka.clients.producer._
 import org.apache.kafka.common.serialization.Serializer
-import util.Properties
 
 object Producer {
-  private[kafka] def newKafkaProducer[F[_], K, V](settings: ProducerSettings[K, V])(implicit keySerializer: Serializer[K], valueSerializer: Serializer[V], F: Async[F]): F[ProducerControl[F, K, V]] = F.delay {
+  private[kafka] def newKafkaProducer[F[_], K, V](settings: ProducerSettings[K, V])(implicit F: Async[F]): F[ProducerControl[F, K, V]] = F.delay {
     new ProducerControlImpl[F, K, V](
       new KafkaProducer(Properties.fromMap(settings.properties), settings.keySerializer, settings.valueSerializer)
     )
