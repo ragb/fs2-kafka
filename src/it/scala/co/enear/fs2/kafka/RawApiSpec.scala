@@ -22,7 +22,7 @@ class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specificat
 
   val testTopic = "test"
   val bootstrapServers = s"localhost:${KafkaAdvertisedPort}"
-  val producerSettings = ProducerSettings().withBootstrapServers(bootstrapServers)
+  val producerSettings = ProducerSettings[String, String]().withBootstrapServers(bootstrapServers)
   val consumerSettings = ConsumerSettings[String, String](100 millis).withBootstrapServers(bootstrapServers)
     .withGroupId("test")
     .withAutoOffsetReset("earliest")
@@ -32,7 +32,7 @@ class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specificat
 
   "Raw API" should {
     "Doroundtrip" in {
-      val producerStream = Producer.kafkaProducer[Task, String, String, Nothing](producerSettings) { producerControl =>
+      val producerStream = Producer[Task, String, String, Nothing](producerSettings) { producerControl =>
           Stream[Task, String]("hello")
           .map(str => ProducerMessage[String, String, Unit](new ProducerRecord(testTopic, "key", str), ()))
             .through(producerControl.send[Unit])
@@ -50,7 +50,7 @@ class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specificat
 
     "Consume produced messages" in {
       val count = 10000
-      val producerStream = Producer.kafkaProducer[Task, String, String, Unit](producerSettings) { producerControl =>
+      val producerStream = Producer[Task, String, String, Unit](producerSettings) { producerControl =>
           Stream.range(0, count)
             .covary[Task]
             .map(_.toString)
@@ -72,7 +72,7 @@ sum <- consumerStream.runFold[Int](0)(_ + _)
 
 
     "Commit messages" in {
-            val producerStream = Producer.kafkaProducer[Task, String, String, Nothing](producerSettings) { producerControl =>
+            val producerStream = Producer[Task, String, String, Nothing](producerSettings) { producerControl =>
           Stream[Task, String]("hello")
           .map(str => ProducerMessage[String, String, Unit](new ProducerRecord(testTopic, "key", str), ()))
             .through(producerControl.send[Unit])

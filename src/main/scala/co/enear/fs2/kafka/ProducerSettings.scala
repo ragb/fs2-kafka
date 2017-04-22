@@ -1,13 +1,17 @@
 package co.enear.fs2.kafka
 
 import org.apache.kafka.clients.producer.ProducerConfig
+import org.apache.kafka.common.serialization.Serializer
 
-case class ProducerSettings(properties: Map[String, String] = Map.empty) {
+case class ProducerSettings[K, V](properties: Map[String, String] = Map.empty)(implicit
+  val keySerializer: Serializer[K],
+    val valueSerializer: Serializer[V]) {
+
   def withBootstrapServers(bootstrapServers: String) = withProperty(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers)
 
   def withAcks(acks: String) = withProperty(ProducerConfig.ACKS_CONFIG, acks)
   def withRetries(retries: Int) = withProperty(ProducerConfig.RETRIES_CONFIG, retries.toString)
 
-  def withProperty(key: String, value: String) = copy(properties = properties.updated(key, value))
+  def withProperty(key: String, value: String) = ProducerSettings[K, V](properties.updated(key, value))
 
 }
