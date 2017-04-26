@@ -6,7 +6,7 @@ lazy val root = (project in file(".")).
   settings(
     inThisBuild(List(
       organization := "co.enear.fs2",
-      scalaVersion := "2.11.11",
+      scalaVersion := "2.12.2",
       crossScalaVersions := Seq("2.11.11", "2.12.2"),
       licenses += ("Apache-2.0", url("http://www.apache.org/licenses/LICENSE-2.0"))
     )),

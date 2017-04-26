@@ -55,10 +55,10 @@ private[kafka] class ConsumerControlImpl[F[_], K, V](
         .drain ++
         Stream[F, ConsumerRecords[K, V]](records)
     }
-    .onError { case e: WakeupException => Stream.empty }
     .filter(_.count > 0)
     .repeat
     .prefetch
+    .onError { case t: WakeupException => Stream.empty }
 
   override def wakeup = F.delay {
     rawConsumer.wakeup()

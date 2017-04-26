@@ -15,8 +15,11 @@ private[kafka] class MockConsumerControlImpl[F[_], K, V](
     pollingThreadTasksQueue: async.mutable.Queue[F, F[Unit]]
 )(implicit F: Async[F]) extends ConsumerControlImpl[F, K, V](rawConsumer, settings, pollingThreadTasksQueue) with MockConsumerControl[F, K, V] {
 
-  override def setException(exception: KafkaException) = F.delay {
-    rawConsumer.setException(exception)
+  override def setException(exception: KafkaException) = pollingThreadTasksQueue.enqueue1 {
+    F.delay {
+      rawConsumer.setException(exception)
+
+    }
   }
 
   override def updateEndOffsets(offsets: Map[TopicPartition, Long]) = F.delay {

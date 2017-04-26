@@ -7,6 +7,7 @@ import org.specs2._
 import fs2._
 import org.apache.kafka.clients.consumer._
 import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.KafkaException
 
 import DefaultSerialization._
 
@@ -32,6 +33,22 @@ class ConsumerSpec extends mutable.Specification {
 
     }
 
+    "Process kafka exceptions" in {
+      val recordsStream = (c: MockConsumerControl[Task, String, String]) =>
+        Stream.eval_(c.assign(manualSubscription)) ++
+          Stream.eval_(c.updateBeginningOffsets(Map(new TopicPartition(testTopic, 0) -> 0L))) ++
+          Stream[Task, ConsumerRecord[String, String]](new ConsumerRecord[String, String](testTopic, 0, 0l, "key", "value")) ++
+          Stream.eval_ {
+            Task.delay {
+              c.setException(new KafkaException("Error"))
+            }
+          }
+
+      val consumerStream = MockConsumer[Task, String, String](settings, recordsStream).simpleStream.plainMessages(manualSubscription)
+
+      consumerStream.run.unsafeRun must throwAn[KafkaException]
+
+    }
     "commit messages" in {
       val consumerStream = MockConsumer[Task, String, String](settings, recordsStream).simpleStream.commitableMessages(manualSubscription)
         .take(messages.size.toLong)

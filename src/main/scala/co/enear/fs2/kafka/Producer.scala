@@ -28,5 +28,6 @@ trait ProducerControl[F[_], K, V] {
 
   final def send[P]: Pipe[F, ProducerMessage[K, V, P], ProducerMetadata[P]] = _.evalMap(sendSync _)
   final def sendSink: Sink[F, ProducerRecord[K, V]] = _.evalMap(sendAsync _)
+    .drain
 }
 
