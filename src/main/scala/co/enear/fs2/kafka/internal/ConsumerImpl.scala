@@ -45,8 +45,9 @@ private[kafka] class ConsumerControlImpl[F[_], K, V](
     rawConsumer.poll(settings.pollInterval.toMillis)
   }
 
-  override def pollStream = Stream.eval(poll)
+  override def pollStream = Stream.repeatEval(poll)
     .flatMap { records =>
+
       // If we have any tasks to evaluate in the same thread we call poll, do it here
       Stream.eval(pollThreadTasksQueue.size.get)
         .filter(_ > 0)
@@ -56,9 +57,13 @@ private[kafka] class ConsumerControlImpl[F[_], K, V](
         Stream[F, ConsumerRecords[K, V]](records)
     }
     .filter(_.count > 0)
-    .repeat
     .prefetch
-    .onError { case t: WakeupException => Stream.empty }
+    .onError {
+      _ match {
+        case t: WakeupException => Stream.empty
+        case t: Throwable => Stream.fail(t)
+      }
+    }
 
   override def wakeup = F.delay {
     rawConsumer.wakeup()

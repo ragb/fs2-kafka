@@ -12,7 +12,8 @@ import org.apache.kafka.common.KafkaException
 import DefaultSerialization._
 
 class ConsumerSpec extends mutable.Specification {
-  implicit val strategy = Strategy.fromCachedDaemonPool("workers")
+
+  implicit val strategy = Strategy.fromCachedDaemonPool("fs2")
   val testTopic = "test"
   val manualSubscription = Subscriptions.assignment(Set(new TopicPartition(testTopic, 0)))
   val settings = ConsumerSettings[String, String](50 millis).withGroupId("test")
@@ -23,6 +24,7 @@ class ConsumerSpec extends mutable.Specification {
       Stream.eval_(c.updateBeginningOffsets(Map(new TopicPartition(testTopic, 0) -> 0))) ++
       Stream.emits[Pure, Int](messages).
       map(offset => new ConsumerRecord[String, String](testTopic, 0, offset.toLong, "key", offset.toString))
+
   "consumer" should {
     "Consume messages" in {
       val consumerStream = MockConsumer[Task, String, String](settings, recordsStream).simpleStream.plainMessages(manualSubscription)
@@ -35,20 +37,15 @@ class ConsumerSpec extends mutable.Specification {
 
     "Process kafka exceptions" in {
       val recordsStream = (c: MockConsumerControl[Task, String, String]) =>
-        Stream.eval_(c.assign(manualSubscription)) ++
-          Stream.eval_(c.updateBeginningOffsets(Map(new TopicPartition(testTopic, 0) -> 0L))) ++
-          Stream[Task, ConsumerRecord[String, String]](new ConsumerRecord[String, String](testTopic, 0, 0l, "key", "value")) ++
-          Stream.eval_ {
-            Task.delay {
-              c.setException(new KafkaException("Error"))
-            }
-          }
+        Stream.eval_ {
+          c.setException(new KafkaException("Error"))
+        }
 
       val consumerStream = MockConsumer[Task, String, String](settings, recordsStream).simpleStream.plainMessages(manualSubscription)
 
-      consumerStream.run.unsafeRun must throwAn[KafkaException]
-
+      consumerStream.runLog.unsafeRun must throwAn[KafkaException]
     }
+
     "commit messages" in {
       val consumerStream = MockConsumer[Task, String, String](settings, recordsStream).simpleStream.commitableMessages(manualSubscription)
         .take(messages.size.toLong)
