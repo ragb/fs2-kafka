@@ -23,6 +23,8 @@ class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specificat
   val testTopic = "test"
   val bootstrapServers = s"localhost:${KafkaAdvertisedPort}"
   val producerSettings = ProducerSettings[String, String]().withBootstrapServers(bootstrapServers)
+  val producer = Producer[Task, String, String](producerSettings)
+
   val consumerSettings = ConsumerSettings[String, String](100 millis).withBootstrapServers(bootstrapServers)
     .withGroupId("test")
     .withAutoOffsetReset("earliest")
@@ -32,11 +34,10 @@ class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specificat
 
   "Raw API" should {
     "Doroundtrip" in {
-      val producerStream = Producer[Task, String, String, ProducerMetadata[Unit]](producerSettings) { producerControl =>
+      val producerStream = 
           Stream[Task, String]("hello")
           .map(str => ProducerMessage[String, String, Unit](new ProducerRecord(testTopic, "key", str), ()))
-            .through(producerControl.send[Unit])
-        }
+            .through(producer.send[Unit])
 
       val consumerStream =  Consumer[Task, String, String](consumerSettings).simpleStream.plainMessages(subscription)
         .map(_.value)
@@ -49,12 +50,12 @@ class RawApiSpec(implicit executionEnv: ExecutionEnv) extends mutable.Specificat
 
 
     "Commit messages" in {
-            val producerStream = Producer[Task, String, String, Nothing](producerSettings) { producerControl =>
+            val producerStream = 
           Stream[Task, String]("hello")
           .map(str => ProducerMessage[String, String, Unit](new ProducerRecord(testTopic, "key", str), ()))
-            .through(producerControl.send[Unit])
+            .through(producer.send[Unit])
           .drain
-        }
+
 
       val consumerStream = time.sleep_[Task](2 seconds) ++ Consumer[Task, String, String](consumerSettings.withGroupId("test3").withAutoCommit(false)).simpleStream.commitableMessages(subscription)
         .evalMap(_.commitableOffset.commit)
