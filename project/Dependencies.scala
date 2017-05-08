@@ -10,7 +10,7 @@ object Dependencies {
   lazy val slf4jSimple = "org.slf4j" % "slf4j-simple" % slf4jVersion
   lazy val kindProjector = compilerPlugin("org.spire-math" %% "kind-projector" % kindProjectorVersion cross CrossVersion.binary)
 
-  val fs2ExtensionsVersion = "0.1.3"
+  val fs2ExtensionsVersion = "0.1.4"
   val specs2Version = "3.8.8"
   val fs2Version = "0.9.5"
   val kafkaClientsVersion = "0.10.2.0"
