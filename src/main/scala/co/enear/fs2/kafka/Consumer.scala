@@ -93,13 +93,18 @@ trait ConsumerControl[F[_], K, V] {
   private[kafka] def rawConsumer: org.apache.kafka.clients.consumer.Consumer[K, V]
 }
 
-case class CommitableMessage[F[_], A](msg: A, commitableOffset: CommitableOffset[F])
+final case class CommitableMessage[F[_], A](msg: A, commitableOffset: CommitableOffset[F]) {
+  def map[B](f: A => B) = copy[F, B](msg = f(msg))
+}
 
-object CommitableMessage {
+object CommitableMessage extends CommitableMessageInstances
 
-  implicit def commitableMessageFunctor[F[_]] = new Functor[CommitableMessage[F, ?]] {
-    override def map[A, B](fa: CommitableMessage[F, A])(f: A => B) = fa.copy[F, B](msg = f(fa.msg))
+private[kafka] trait CommitableMessageInstances {
+
+  implicit def commitableMessageFunctor[F[_]]: Functor[CommitableMessage[F, ?]] = new Functor[CommitableMessage[F, ?]] {
+    override def map[A, B](fa: CommitableMessage[F, A])(f: A => B) = fa map f
   }
+
 }
 
 final case class GroupTopicPartition(group: String, topic: String, partition: Int)
