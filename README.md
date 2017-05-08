@@ -13,16 +13,44 @@ Proof of concept code.
 * Sync and Async producer API.
 * Commitable message support (for manual offset commits)
 * Automatic and Manual subscription to topics and partitions.
+* Partitioned streams to leverage concurrency within Kafka partitions.
 
 ### Dependencies ###
 
 Artifacts are released to my [bintray repo][bintrayrepo]
 
-To use this library in a SBT project:
+To use this library in your SBT project:
 
 ```scala
 resolvers += Resolver.bintrayRepo("batista", "maven")
-libraryDependencies += "co.enear.fs2" %% "fs2-kafka" % "0.0.3"
+libraryDependencies += "co.enear.fs2" %% "fs2-kafka" % "0.0.8"
+```
+
+### Example ###
+
+```scala
+import scala.concurrent.duration._
+import fs2._
+import co.enear.fs2.kafka._
+import DefaultSerialization._
+
+
+val bootstrapServers = "localhost:9092"
+val consumerGroup = "myConsumer"
+val consumerSettings = ConsumerSettings[String, String](100 millis)
+  .withBootstrapServers(bootstrapServers)
+  .withGroupId(consumerGroup)
+
+val producerSettings = ProducerSettings[String, String]()
+  .withBootstrapServers(bootstrapServers)
+
+// Consume from one topic and say hello to another
+val simpleStream = Consumer[Task, String, String](consumerSettings)
+  .simpleStream 
+  .plainMessages(Subscription.topics("names"))
+  .map("hello" + _.value)
+  .map(new ProducerRecord("topic2", null, _))
+  .to(Producer[Task, String, String](producerSettings).sendAsync)
 ```
 
 [fs2]: https://github.com/functional-streams-for-scala/fs2
