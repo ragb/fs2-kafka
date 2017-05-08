@@ -1,4 +1,3 @@
-
 import Dependencies._
 
 lazy val root = (project in file(".")).
@@ -14,6 +13,7 @@ lazy val root = (project in file(".")).
     logBuffered in Test := false,
     libraryDependencies ++= Seq(
       fs2Core,
+      fs2Extensions,
       kafkaClients,
       specs2Core % "it,test",
       slf4jSimple % "it,test",

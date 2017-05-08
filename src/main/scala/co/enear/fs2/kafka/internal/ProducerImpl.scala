@@ -4,7 +4,7 @@ package internal
 import fs2.util.Async
 import org.apache.kafka.clients.producer._
 
-private[kafka] class ProducerControlImpl[F[_], K, V](producer: Producer[K, V])(implicit F: Async[F]) extends ProducerControl[F, K, V] {
+private[kafka] class ProducerControlImpl[F[_], K, V](producer: Producer[K, V], settings: ProducerSettings[K, V])(implicit F: Async[F]) extends ProducerControl[F, K, V] {
   override def close = F.delay {
     producer.close()
   }
@@ -25,4 +25,5 @@ private[kafka] class ProducerControlImpl[F[_], K, V](producer: Producer[K, V])(i
       ()
     }
   }
+  val parallelism = settings.parallelism
 }
